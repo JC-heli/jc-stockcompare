@@ -26,7 +26,7 @@ COMMON_INDICES = [
 ]
 
 # ── 台股對照表（本地 CSV 快取，只有第一次或手動更新才重抓）────────
-TW_CSV = "tools/tw_stocks.csv"
+TW_CSV = "tw_stocks.csv" if not Path("tools/tw_stocks.csv").exists() else "tools/tw_stocks.csv"
 
 def fetch_tw_stocks_remote():
     stocks = []
@@ -142,12 +142,16 @@ def ticker_widget(prefix, default_ticker, default_label, tw_stocks):
 def load_series(ticker: str) -> pd.Series:
     raw = yf.download(ticker, start="1990-01-01", interval="1d",
                       auto_adjust=True, progress=False)
+    if raw.empty:
+        raise ValueError(f"Yahoo Finance 未回傳 {ticker} 的資料，請稍後再試")
     close = raw["Close"]
     if isinstance(close, pd.DataFrame):
         close = close.iloc[:, 0]
     s = close.squeeze()
     s = pd.Series(s.values, index=s.index, name=ticker)
     s.index = s.index.tz_localize(None) if s.index.tz else s.index
+    if s.dropna().empty:
+        raise ValueError(f"{ticker} 資料全為空值，請確認代碼是否正確")
     return s
 
 # ── 台股清單背景自動更新 ──────────────────────────────────────────
