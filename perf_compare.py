@@ -60,11 +60,19 @@ def fetch_tw_stocks_remote():
 
 @st.cache_data(show_spinner=False)
 def load_tw_stocks():
-    try:
-        df = pd.read_csv(TW_CSV, dtype=str)
-        return df.to_dict("records")
-    except FileNotFoundError:
-        return []   # 空清單，側邊欄會提示更新
+    candidates = [
+        Path(__file__).parent / "tw_stocks.csv",
+        Path("tw_stocks.csv"),
+        Path("tools/tw_stocks.csv"),
+    ]
+    for p in candidates:
+        try:
+            df = pd.read_csv(p, dtype=str)
+            if not df.empty:
+                return df.to_dict("records")
+        except FileNotFoundError:
+            pass
+    return []
 
 def search_local(query: str, tw_stocks: list, top: int = 15):
     q = query.strip().upper()
