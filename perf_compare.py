@@ -26,7 +26,7 @@ COMMON_INDICES = [
 ]
 
 # ── 台股對照表（本地 CSV 快取，只有第一次或手動更新才重抓）────────
-TW_CSV = "tw_stocks.csv" if not Path("tools/tw_stocks.csv").exists() else "tools/tw_stocks.csv"
+TW_CSV = str(Path(__file__).parent / "tw_stocks.csv")
 
 def fetch_tw_stocks_remote():
     stocks = []
