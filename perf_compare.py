@@ -319,12 +319,22 @@ if pending_key in st.session_state:
     st.session_state[di_start_key] = ns
     st.session_state[di_end_key]   = ne
 
+prev_slider_key = f"prev_slider_{ticker1}_{ticker2}"
+
 v_start, v_end = st.select_slider(
     "拖拉選取分析區間 ── 圖表會同步縮放",
     options=all_dates,
     value=(first_date, last_date),
     key=slider_key,
 )
+
+# 滑桿被拖動時，同步 date input（避免 date input 舊值觸發反向覆蓋）
+prev_slider = st.session_state.get(prev_slider_key)
+slider_moved = prev_slider is not None and prev_slider != (v_start, v_end)
+st.session_state[prev_slider_key] = (v_start, v_end)
+if slider_moved:
+    st.session_state[di_start_key] = v_start
+    st.session_state[di_end_key]   = v_end
 
 # ── 快速選取列 ────────────────────────────────────────────────────
 presets = [
