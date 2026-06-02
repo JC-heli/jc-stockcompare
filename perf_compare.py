@@ -183,6 +183,7 @@ def _to_series(df_or_series, ticker: str) -> pd.Series:
     return s
 
 _twse_cache: dict = {}   # module-level，避免巢狀 @st.cache_data 失效問題
+_tpex_cache: dict = {}
 
 def _fetch_twse_month(stock_code: str, year_month: str) -> dict:
     """從 TWSE 抓單月每日收盤，回傳 {pd.Timestamp: close}。"""
@@ -212,6 +213,37 @@ def _fetch_twse_month(stock_code: str, year_month: str) -> dict:
     _twse_cache[key] = result
     return result
 
+def _fetch_tpex_month(stock_code: str, year_month: str) -> dict:
+    """從 TPEX 抓上櫃股單月每日收盤，回傳 {pd.Timestamp: close}。"""
+    key = (stock_code, year_month)
+    if key in _tpex_cache:
+        return _tpex_cache[key]
+    result = {}
+    try:
+        year  = int(year_month[:4])
+        month = int(year_month[4:6])
+        roc_d = f"{year - 1911}/{month:02d}"   # e.g. "113/06"
+        resp = requests.get(
+            "https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php",
+            params={"l": "zh-tw", "d": roc_d, "s": stock_code, "o": "json"},
+            timeout=10, headers={"User-Agent": "Mozilla/5.0"},
+        )
+        data = resp.json()
+        for row in data.get("aaData", []):
+            try:
+                # row[0] = "月/日"（e.g., "05/15"），row[6] = 收盤價
+                md = row[0].split("/")
+                ts = pd.Timestamp(year, int(md[0]), int(md[1]))
+                close_str = row[6].replace(",", "")
+                if close_str and close_str != "--":
+                    result[ts] = float(close_str)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    _tpex_cache[key] = result
+    return result
+
 def _build_ref_prices(ticker: str, bad_idx) -> dict:
     """
     建立參考收盤價字典 {Timestamp: close}。
@@ -227,6 +259,14 @@ def _build_ref_prices(ticker: str, bad_idx) -> dict:
             year_months.add((dt - pd.DateOffset(months=1)).strftime("%Y%m"))
         for ym in sorted(year_months):
             ref.update(_fetch_twse_month(stock_code, ym))
+    elif ticker.endswith(".TWO"):
+        stock_code = ticker[:-4]
+        year_months = set()
+        for dt in bad_idx:
+            year_months.add(dt.strftime("%Y%m"))
+            year_months.add((dt - pd.DateOffset(months=1)).strftime("%Y%m"))
+        for ym in sorted(year_months):
+            ref.update(_fetch_tpex_month(stock_code, ym))
 
     if not ref:
         # fallback：Yahoo 原始收盤
@@ -404,7 +444,7 @@ with st.sidebar:
             st.session_state["targets"].append({"id": new_id, "ticker": "SPY", "label": "SPY"})
             st.rerun()
 
-    st.caption("資料來源：Yahoo Finance / TWSE")
+    st.caption("資料來源：Yahoo Finance / TWSE / TPEX")
     st.caption(f"更新時間：{datetime.now().strftime('%H:%M:%S')}")
     if st.button("🔄 重新整理"):
         st.cache_data.clear()
@@ -696,8 +736,9 @@ fig1.update_layout(
     height=460,
     xaxis=dict(range=[str(v_start), str(v_end)], rangeslider_visible=False),
     yaxis=dict(tickformat="+.0f", ticksuffix="%", showgrid=True),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-    margin=dict(l=70, r=90, t=60, b=40),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                font=dict(size=12), itemwidth=40),
+    margin=dict(l=70, r=90, t=100, b=40),
 )
 st.plotly_chart(fig1, use_container_width=True)
 
@@ -728,8 +769,9 @@ if len(years_common) > 0:
         title="逐年報酬率比較",
         barmode="group",
         height=380,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        margin=dict(l=60, r=60, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=12), itemwidth=40),
+        margin=dict(l=60, r=60, t=100, b=40),
         yaxis_title="%",
         xaxis=dict(tickmode="linear", dtick=1),
     )
