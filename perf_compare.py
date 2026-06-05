@@ -787,3 +787,181 @@ if len(years_common) > 0:
         ann_df.style.format("{:+.1f}%").map(color_val),
         use_container_width=True,
     )
+
+# ── MDD 進階探討 ──────────────────────────────────────────────────
+
+def _hex_to_rgba(hex_color: str, alpha: float = 0.15) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def find_top_n_drawdowns(series: pd.Series, n: int = 10) -> list:
+    """識別歷史上最大的 N 次獨立回撤事件（以高峰→低谷為一事件）。"""
+    s = series.dropna()
+    if len(s) < 2:
+        return []
+    arr = s.values.astype(float)
+    idx = s.index
+    running_max = arr[0]
+    running_max_i = 0
+    in_dd = False
+    dd_peak_i = dd_trough_i = 0
+    dd_trough_val = arr[0]
+    events = []
+
+    for i in range(1, len(arr)):
+        v = arr[i]
+        if np.isnan(v):
+            continue
+        if v >= running_max:
+            if in_dd:
+                dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
+                if dd_pct < -0.5:
+                    events.append({
+                        "rank": 0,
+                        "高峰日": idx[dd_peak_i].date(),
+                        "低谷日": idx[dd_trough_i].date(),
+                        "恢復日": idx[i].date(),
+                        "回撤%": dd_pct,
+                        "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
+                        "低→復(日)": (idx[i] - idx[dd_trough_i]).days,
+                    })
+                in_dd = False
+            running_max = v
+            running_max_i = i
+        else:
+            if not in_dd:
+                in_dd = True
+                dd_peak_i = running_max_i
+                dd_trough_i = i
+                dd_trough_val = v
+            elif v < dd_trough_val:
+                dd_trough_val = v
+                dd_trough_i = i
+
+    if in_dd:
+        dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
+        if dd_pct < -0.5:
+            events.append({
+                "rank": 0,
+                "高峰日": idx[dd_peak_i].date(),
+                "低谷日": idx[dd_trough_i].date(),
+                "恢復日": None,
+                "回撤%": dd_pct,
+                "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
+                "低→復(日)": None,
+            })
+
+    events.sort(key=lambda x: x["回撤%"])
+    for rank, ev in enumerate(events[:n], 1):
+        ev["rank"] = rank
+    return events[:n]
+
+
+st.divider()
+with st.expander("📉 MDD 進階探討 — Top 10 回撤事件 × 各標的比較"):
+
+    # ── 回撤走勢圖（選取區間）────────────────────────────────────
+    dd_fig = go.Figure()
+    for i, (col, label, color) in enumerate(zip(col_names, labels, COLORS)):
+        s_view = df_view[col].dropna()
+        if len(s_view) < 2:
+            continue
+        dd_curve = (s_view / s_view.cummax() - 1) * 100
+        dd_fig.add_trace(go.Scatter(
+            x=dd_curve.index, y=dd_curve,
+            name=label,
+            line=dict(color=color, width=1.5),
+            fill="tozeroy",
+            fillcolor=_hex_to_rgba(color, 0.12),
+        ))
+    dd_fig.update_layout(
+        template="plotly_dark",
+        title=f"回撤走勢圖（所選區間 {v_start} ～ {v_end}）",
+        height=320,
+        yaxis=dict(tickformat=".0f", ticksuffix="%"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=12), itemwidth=40),
+        margin=dict(l=60, r=60, t=80, b=40),
+    )
+    st.plotly_chart(dd_fig, use_container_width=True)
+
+    # ── Top 10 MDD 事件表格（各標的個別全歷史）───────────────────
+    st.markdown("**各標的 Top 10 最大回撤事件（各標的全歷史）**")
+    tabs_mdd = st.tabs(labels)
+    all_mdd_events: list[tuple] = []
+    for tab, s_full, label, color in zip(tabs_mdd, series_list, labels, COLORS):
+        events = find_top_n_drawdowns(s_full, n=10)
+        all_mdd_events.append((label, color, events))
+        with tab:
+            if not events:
+                st.caption("資料不足，無法計算")
+                continue
+
+            def _color_dd_cell(v):
+                try:
+                    val = float(str(v).replace("%", ""))
+                    if val < -30:
+                        return "color: #ef5350"
+                    elif val < -15:
+                        return "color: #ffa726"
+                    return "color: #ffd54f"
+                except Exception:
+                    return ""
+
+            rows = []
+            for ev in events:
+                rows.append({
+                    "#": ev["rank"],
+                    "回撤%": f"{ev['回撤%']:.1f}%",
+                    "高峰日": str(ev["高峰日"]),
+                    "低谷日": str(ev["低谷日"]),
+                    "恢復日": str(ev["恢復日"]) if ev["恢復日"] else "尚未恢復",
+                    "高→低(日)": ev["高→低(日)"],
+                    "低→復(日)": ev["低→復(日)"] if ev["低→復(日)"] is not None else "-",
+                })
+            edf = pd.DataFrame(rows)
+            st.dataframe(
+                edf.style.map(_color_dd_cell, subset=["回撤%"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # ── 橫向比較泡泡圖（X=高峰日，Y=回撤幅度，大小=持續天數）────
+    st.markdown("**Top 10 MDD 事件橫向比較**")
+    st.caption("X 軸 = 高峰日，Y 軸 = 回撤幅度，圓圈大小 = 高峰→低谷天數")
+    bubble_fig = go.Figure()
+    for label, color, events in all_mdd_events:
+        if not events:
+            continue
+        bubble_fig.add_trace(go.Scatter(
+            x=[str(ev["高峰日"]) for ev in events],
+            y=[ev["回撤%"] for ev in events],
+            name=label,
+            mode="markers",
+            marker=dict(
+                color=color,
+                size=[max(10, min(int(ev["高→低(日)"] / 6), 50)) for ev in events],
+                opacity=0.8,
+                line=dict(color="white", width=0.5),
+            ),
+            hovertext=[
+                (f"{label}<br>回撤: {ev['回撤%']:.1f}%<br>"
+                 f"高峰: {ev['高峰日']}<br>低谷: {ev['低谷日']}<br>"
+                 f"高→低: {ev['高→低(日)']}日<br>"
+                 f"恢復: {ev['恢復日'] if ev['恢復日'] else '尚未恢復'}")
+                for ev in events
+            ],
+            hoverinfo="text",
+        ))
+    bubble_fig.add_hline(y=0, line_color="gray", line_width=0.6)
+    bubble_fig.update_layout(
+        template="plotly_dark",
+        height=420,
+        yaxis=dict(tickformat=".0f", ticksuffix="%"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
+                    font=dict(size=12), itemwidth=40),
+        margin=dict(l=60, r=60, t=60, b=40),
+    )
+    st.plotly_chart(bubble_fig, use_container_width=True)
