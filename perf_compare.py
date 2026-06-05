@@ -806,37 +806,6 @@ for i, anom in enumerate(anom_list):
             annotation_font=dict(color=fill_color, size=10),
         )
 
-# MDD 區間標注（每標的 Top 10 回撤，疊加在報酬走勢圖上）
-_vs = pd.Timestamp(v_start)
-_ve = pd.Timestamp(v_end)
-for _ti, (_lbl, _clr, _evs) in enumerate(all_mdd_events):
-    for ev in _evs:
-        _peak   = pd.Timestamp(ev["高峰日"])
-        _trough = pd.Timestamp(ev["低谷日"])
-        _recov  = pd.Timestamp(ev["恢復日"]) if ev["恢復日"] else _ve
-        if _peak > _ve or _recov < _vs:
-            continue
-        _x0 = max(_peak, _vs)
-        _x1 = min(_recov, _ve)
-        fig1.add_vrect(
-            x0=str(_x0.date()), x1=str(_x1.date()),
-            fillcolor=_clr, opacity=0.08, line_width=0,
-        )
-        if ev["rank"] <= 3 and _vs <= _trough <= _ve:
-            fig1.add_vline(
-                x=str(_trough.date()),
-                line=dict(color=_clr, width=1, dash="dot"),
-            )
-            fig1.add_annotation(
-                x=_trough, xanchor="center",
-                yref="paper", y=0.02 + _ti * 0.055,
-                text=f"#{ev['rank']} {ev['回撤%']:.0f}%",
-                showarrow=False,
-                font=dict(size=8, color=_clr),
-                bgcolor="rgba(0,0,0,0.55)",
-                bordercolor=_clr, borderwidth=0.5,
-            )
-
 fig1.update_layout(
     template="plotly_dark",
     title=f"報酬率比較（以所選區間起點 {v_start} 為基準）",
