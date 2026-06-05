@@ -512,6 +512,76 @@ def calc_metrics(series: pd.Series, name: str) -> dict:
     return {"名稱": name, "總報酬": total_ret, "年化報酬": ann_ret,
             "MDD": mdd, "MDD區間": mdd_range, "年化波動": vol, "Sharpe": sharpe}
 
+# ── MDD 輔助函式 ──────────────────────────────────────────────────
+
+def _hex_to_rgba(hex_color: str, alpha: float = 0.15) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def find_top_n_drawdowns(series: pd.Series, n: int = 10) -> list:
+    """識別歷史上最大的 N 次獨立回撤事件（以高峰→低谷為一事件）。"""
+    s = series.dropna()
+    if len(s) < 2:
+        return []
+    arr = s.values.astype(float)
+    idx = s.index
+    running_max = arr[0]
+    running_max_i = 0
+    in_dd = False
+    dd_peak_i = dd_trough_i = 0
+    dd_trough_val = arr[0]
+    events = []
+
+    for i in range(1, len(arr)):
+        v = arr[i]
+        if np.isnan(v):
+            continue
+        if v >= running_max:
+            if in_dd:
+                dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
+                if dd_pct < -0.5:
+                    events.append({
+                        "rank": 0,
+                        "高峰日": idx[dd_peak_i].date(),
+                        "低谷日": idx[dd_trough_i].date(),
+                        "恢復日": idx[i].date(),
+                        "回撤%": dd_pct,
+                        "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
+                        "低→復(日)": (idx[i] - idx[dd_trough_i]).days,
+                    })
+                in_dd = False
+            running_max = v
+            running_max_i = i
+        else:
+            if not in_dd:
+                in_dd = True
+                dd_peak_i = running_max_i
+                dd_trough_i = i
+                dd_trough_val = v
+            elif v < dd_trough_val:
+                dd_trough_val = v
+                dd_trough_i = i
+
+    if in_dd:
+        dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
+        if dd_pct < -0.5:
+            events.append({
+                "rank": 0,
+                "高峰日": idx[dd_peak_i].date(),
+                "低谷日": idx[dd_trough_i].date(),
+                "恢復日": None,
+                "回撤%": dd_pct,
+                "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
+                "低→復(日)": None,
+            })
+
+    events.sort(key=lambda x: x["回撤%"])
+    for rank, ev in enumerate(events[:n], 1):
+        ev["rank"] = rank
+    return events[:n]
+
 # ── 標題 ──────────────────────────────────────────────────────────
 if len(labels) == 2:
     st.title(f"📊 {labels[0]}  vs  {labels[1]}  績效比較")
@@ -694,6 +764,12 @@ if len(df_view) >= 2:
             hide_index=True,
         )
 
+# 預算各標的 Top 10 MDD（圖表標注 + expander 共用）
+all_mdd_events = [
+    (lbl, clr, find_top_n_drawdowns(s, n=10))
+    for lbl, clr, s in zip(labels, COLORS, series_list)
+]
+
 st.divider()
 
 # ── 圖1：報酬率走勢圖 ─────────────────────────────────────────────
@@ -729,6 +805,37 @@ for i, anom in enumerate(anom_list):
             annotation_text=f"⚠️{i+1}", annotation_position="top left",
             annotation_font=dict(color=fill_color, size=10),
         )
+
+# MDD 區間標注（每標的 Top 10 回撤，疊加在報酬走勢圖上）
+_vs = pd.Timestamp(v_start)
+_ve = pd.Timestamp(v_end)
+for _ti, (_lbl, _clr, _evs) in enumerate(all_mdd_events):
+    for ev in _evs:
+        _peak   = pd.Timestamp(ev["高峰日"])
+        _trough = pd.Timestamp(ev["低谷日"])
+        _recov  = pd.Timestamp(ev["恢復日"]) if ev["恢復日"] else _ve
+        if _peak > _ve or _recov < _vs:
+            continue
+        _x0 = max(_peak, _vs)
+        _x1 = min(_recov, _ve)
+        fig1.add_vrect(
+            x0=str(_x0.date()), x1=str(_x1.date()),
+            fillcolor=_clr, opacity=0.08, line_width=0,
+        )
+        if ev["rank"] <= 3 and _vs <= _trough <= _ve:
+            fig1.add_vline(
+                x=str(_trough.date()),
+                line=dict(color=_clr, width=1, dash="dot"),
+            )
+            fig1.add_annotation(
+                x=_trough, xanchor="center",
+                yref="paper", y=0.02 + _ti * 0.055,
+                text=f"#{ev['rank']} {ev['回撤%']:.0f}%",
+                showarrow=False,
+                font=dict(size=8, color=_clr),
+                bgcolor="rgba(0,0,0,0.55)",
+                bordercolor=_clr, borderwidth=0.5,
+            )
 
 fig1.update_layout(
     template="plotly_dark",
@@ -788,77 +895,6 @@ if len(years_common) > 0:
         use_container_width=True,
     )
 
-# ── MDD 進階探討 ──────────────────────────────────────────────────
-
-def _hex_to_rgba(hex_color: str, alpha: float = 0.15) -> str:
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
-
-
-def find_top_n_drawdowns(series: pd.Series, n: int = 10) -> list:
-    """識別歷史上最大的 N 次獨立回撤事件（以高峰→低谷為一事件）。"""
-    s = series.dropna()
-    if len(s) < 2:
-        return []
-    arr = s.values.astype(float)
-    idx = s.index
-    running_max = arr[0]
-    running_max_i = 0
-    in_dd = False
-    dd_peak_i = dd_trough_i = 0
-    dd_trough_val = arr[0]
-    events = []
-
-    for i in range(1, len(arr)):
-        v = arr[i]
-        if np.isnan(v):
-            continue
-        if v >= running_max:
-            if in_dd:
-                dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
-                if dd_pct < -0.5:
-                    events.append({
-                        "rank": 0,
-                        "高峰日": idx[dd_peak_i].date(),
-                        "低谷日": idx[dd_trough_i].date(),
-                        "恢復日": idx[i].date(),
-                        "回撤%": dd_pct,
-                        "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
-                        "低→復(日)": (idx[i] - idx[dd_trough_i]).days,
-                    })
-                in_dd = False
-            running_max = v
-            running_max_i = i
-        else:
-            if not in_dd:
-                in_dd = True
-                dd_peak_i = running_max_i
-                dd_trough_i = i
-                dd_trough_val = v
-            elif v < dd_trough_val:
-                dd_trough_val = v
-                dd_trough_i = i
-
-    if in_dd:
-        dd_pct = (dd_trough_val / arr[dd_peak_i] - 1) * 100
-        if dd_pct < -0.5:
-            events.append({
-                "rank": 0,
-                "高峰日": idx[dd_peak_i].date(),
-                "低谷日": idx[dd_trough_i].date(),
-                "恢復日": None,
-                "回撤%": dd_pct,
-                "高→低(日)": (idx[dd_trough_i] - idx[dd_peak_i]).days,
-                "低→復(日)": None,
-            })
-
-    events.sort(key=lambda x: x["回撤%"])
-    for rank, ev in enumerate(events[:n], 1):
-        ev["rank"] = rank
-    return events[:n]
-
-
 st.divider()
 with st.expander("📉 MDD 進階探討 — Top 10 回撤事件 × 各標的比較"):
 
@@ -890,10 +926,7 @@ with st.expander("📉 MDD 進階探討 — Top 10 回撤事件 × 各標的比�
     # ── Top 10 MDD 事件表格（各標的個別全歷史）───────────────────
     st.markdown("**各標的 Top 10 最大回撤事件（各標的全歷史）**")
     tabs_mdd = st.tabs(labels)
-    all_mdd_events: list[tuple] = []
-    for tab, s_full, label, color in zip(tabs_mdd, series_list, labels, COLORS):
-        events = find_top_n_drawdowns(s_full, n=10)
-        all_mdd_events.append((label, color, events))
+    for tab, (label, color, events) in zip(tabs_mdd, all_mdd_events):
         with tab:
             if not events:
                 st.caption("資料不足，無法計算")
